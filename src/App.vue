@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onUnmounted } from "vue";
-import { Mic, MicOff, Phone, PhoneOff } from "lucide-vue-next";
+import { Mic, MicOff, Phone, PhoneOff, Video, VideoOff } from "lucide-vue-next";
 
 const configuration = {
   iceServers: [
@@ -9,13 +9,17 @@ const configuration = {
   ]
 };
 
+const ENABLE_VIDEO = true;
 const isHost = ref(false);
 const isMuted = ref(false);
+const isVideoEnabled = ref(true);
 const isCallActive = ref(false);
 const connectionCode = ref("");
 const inputCode = ref("");
 const connectionStatus = ref("");
 const waitingForAnswer = ref(false);
+const localVideoRef = ref<HTMLVideoElement | null>(null);
+const remoteVideoRef = ref<HTMLVideoElement | null>(null);
 
 const localStream = ref<MediaStream | null>(null);
 const peerConnection = ref<RTCPeerConnection | null>(null);
@@ -44,11 +48,10 @@ const setupPeerConnectionListeners = (pc: RTCPeerConnection) => {
       case "disconnected":
         connectionStatus.value =
           "Peer disconnected. Waiting for reconnection...";
-        // Set a timeout to end the call if no reconnection occurs
         disconnectionTimeout.value = window.setTimeout(() => {
           connectionStatus.value = "Call ended - peer disconnected";
           endCall();
-        }, 10000); // Wait 10 seconds for potential reconnection
+        }, 10000);
         break;
       case "failed":
         connectionStatus.value = "Connection failed";
@@ -68,6 +71,11 @@ const setupPeerConnectionListeners = (pc: RTCPeerConnection) => {
   };
 
   pc.ontrack = (event) => {
+    if (ENABLE_VIDEO && remoteVideoRef.value) {
+      remoteVideoRef.value.srcObject = event.streams[0];
+      return;
+    }
+
     const remoteStream = new MediaStream();
     event.streams[0].getTracks().forEach((track) => {
       remoteStream.addTrack(track);
@@ -90,8 +98,15 @@ const updateConnectionCode = () => {
 const startCall = async () => {
   try {
     connectionStatus.value = "Initializing call...";
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: true,
+      video: ENABLE_VIDEO
+    });
     localStream.value = stream;
+
+    if (ENABLE_VIDEO && localVideoRef.value) {
+      localVideoRef.value.srcObject = stream;
+    }
 
     const pc = new RTCPeerConnection(configuration);
     peerConnection.value = pc;
@@ -147,8 +162,15 @@ const processAnswerCode = async () => {
 const joinCall = async () => {
   try {
     connectionStatus.value = "Joining call...";
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: true,
+      video: ENABLE_VIDEO
+    });
     localStream.value = stream;
+
+    if (ENABLE_VIDEO && localVideoRef.value) {
+      localVideoRef.value.srcObject = stream;
+    }
 
     const pc = new RTCPeerConnection(configuration);
     peerConnection.value = pc;
@@ -209,6 +231,15 @@ const endCall = () => {
     peerConnection.value = null;
   }
 
+  if (ENABLE_VIDEO) {
+    if (localVideoRef.value) {
+      localVideoRef.value.srcObject = null;
+    }
+    if (remoteVideoRef.value) {
+      remoteVideoRef.value.srcObject = null;
+    }
+  }
+
   isCallActive.value = false;
   isHost.value = false;
   waitingForAnswer.value = false;
@@ -230,6 +261,15 @@ const toggleMute = () => {
   }
 };
 
+const toggleVideo = () => {
+  if (localStream.value) {
+    localStream.value.getVideoTracks().forEach((track) => {
+      track.enabled = !track.enabled;
+    });
+    isVideoEnabled.value = !isVideoEnabled.value;
+  }
+};
+
 onUnmounted(() => {
   endCall();
 });
@@ -239,12 +279,12 @@ onUnmounted(() => {
   <div
     class="min-h-screen bg-gradient-to-br from-indigo-100 to-purple-100 flex items-center justify-center p-4"
   >
-    <div class="bg-white rounded-2xl shadow-xl p-8 w-full max-w-md">
+    <div class="bg-white rounded-2xl shadow-xl p-8 w-full max-w-4xl">
       <h1 class="text-3xl font-bold text-center mb-8 text-indigo-900">
-        Audio Call
+        {{ ENABLE_VIDEO ? "Video" : "Audio" }} Call
       </h1>
 
-      <div v-if="!isCallActive" class="space-y-6">
+      <div v-show="!isCallActive" class="space-y-6">
         <button
           @click="startCall"
           class="w-full py-3 px-4 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors flex items-center justify-center gap-2 font-medium"
@@ -279,7 +319,7 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <div v-else class="space-y-6">
+      <div v-show="isCallActive" class="space-y-6">
         <div
           v-if="connectionStatus"
           :class="[
@@ -293,6 +333,36 @@ onUnmounted(() => {
           ]"
         >
           {{ connectionStatus }}
+        </div>
+
+        <div v-if="ENABLE_VIDEO" class="grid grid-cols-2 gap-4">
+          <div class="relative">
+            <video
+              ref="localVideoRef"
+              autoplay
+              muted
+              playsinline
+              class="w-full rounded-lg bg-gray-900"
+            ></video>
+            <span
+              class="absolute bottom-2 left-2 text-white text-sm bg-black/50 px-2 py-1 rounded"
+            >
+              You
+            </span>
+          </div>
+          <div class="relative">
+            <video
+              ref="remoteVideoRef"
+              autoplay
+              playsinline
+              class="w-full rounded-lg bg-gray-900"
+            ></video>
+            <span
+              class="absolute bottom-2 left-2 text-white text-sm bg-black/50 px-2 py-1 rounded"
+            >
+              Remote
+            </span>
+          </div>
         </div>
 
         <div v-if="connectionCode" class="p-4 bg-gray-50 rounded-lg">
@@ -335,6 +405,19 @@ onUnmounted(() => {
             ]"
           >
             <component :is="isMuted ? MicOff : Mic" :size="24" />
+          </button>
+
+          <button
+            v-if="ENABLE_VIDEO"
+            @click="toggleVideo"
+            :class="[
+              'p-4 rounded-full transition-opacity hover:opacity-90',
+              !isVideoEnabled
+                ? 'bg-red-100 text-red-600'
+                : 'bg-gray-100 text-gray-600'
+            ]"
+          >
+            <component :is="!isVideoEnabled ? VideoOff : Video" :size="24" />
           </button>
 
           <button
